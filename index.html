@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Receipt Matching App</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .header { text-align: center; margin-bottom: 20px; }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th { background-color: #f2f2f2; }
+        img { max-width: 100px; height: auto; }
+        .status { color: green; }
+        .unmatched { color: red; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Receipt Matching App</h1>
+    </div>
+    <button onclick="uploadCSV()">Upload BoA CSV</button>
+    <button onclick="uploadReceipts()">Upload Receipts</button>
+    <button onclick="generateReport()">Generate Report</button>
+    <div id="output"></div>
+
+    <script>
+        let transactions = [];
+        let receipts = [];
+
+        // Function to parse date (MM/DD/YYYY to YYYY-MM-DD)
+        function parseDate(dateStr) {
+            const [month, day, year] = dateStr.split('/');
+            return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+        }
+
+        // Function to parse BoA CSV
+        async function parseCSV(file) {
+            const text = await file.text();
+            const rows = text.split('\n').map(row => row.split(',').map(cell => cell.trim()));
+            return rows.slice(1).map(row => ({
+                purchaseDate: parseDate(row[2] || row[1]), // Purchase Date or Post Date as fallback
+                vendorName: row[0] || '',
+                description: row[6] || '',
+                sourceAmount: parseFloat(row[4] || 0),
+                sourceCurrency: row[5] || 'USD',
+                itemTotal: parseFloat(row[3] || 0)
+            })).filter(t => t.purchaseDate && !isNaN(t.sourceAmount));
+        }
+
+        // Function to process receipt with Google Vision API
+        async function processReceipt(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const response = await fetch(
+                `https://vision.googleapis.com/v1/images:annotate?key=AIzaSyDID5ib0eHNVrBYG0e5vfWQ9RkVinX4hNg`,
+                {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        requests: [{
+                            image: { content: await fileToBase64(file) },
+                            features: [{ type: 'TEXT_DETECTION', maxResults: 1 }]
+                        }]
+                    }),
+                    headers: { 'Content-Type': 'application/json' }
+                }
+            );
+            const data = await response.json();
+            const text = data.responses[0]?.fullTextAnnotation?.text || '';
+            const amountMatch = text.match(/\d+\.\d{2}|\d+/);
+            const amount = amountMatch ? parseFloat(amountMatch[0]) : 0;
+            const currencyMatch = text.match(/(USD|TWD|USD)/i);
+            const currency = currencyMatch ? currencyMatch[0].toUpperCase() : 'USD';
+            return {
+                receiptName: file.name,
+                amount,
+                currency,
+                imageData: await fileToBase64(file),
+                text
+            };
+        }
+
+        // Helper to convert file to base64
+        function fileToBase64(file) {
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target.result.split(',')[1]);
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // Upload and process CSV
+        function uploadCSV() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.csv';
+            input.onchange = async (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    transactions = await parseCSV(file);
+                    alert('CSV uploaded successfully!');
+                }
+            };
+            input.click();
+        }
+
+        // Upload and process receipts
+        function uploadReceipts() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'image/*,.pdf';
+            input.multiple = true;
+            input.onchange = async (e) => {
+                const files = Array.from(e.target.files);
+                receipts = await Promise.all(files.map(processReceipt));
+                alert(`${files.length} receipts processed!`);
+            };
+            input.click();
+        }
+
+        // Match transactions with receipts
+        function matchTransactions() {
+            transactions.forEach(t => {
+                const match = receipts.find(r => {
+                    const dateDiff = Math.abs(new Date(t.purchaseDate) - new Date(r.text.match(/\d{1,2}\/\d{1,2}\/\d{4}/)?.[0] || t.purchaseDate)) / (1000 * 60 * 60 * 24);
+                    const amountDiff = Math.abs(r.amount - t.sourceAmount) / t.sourceAmount < 0.1; // 10% tolerance
+                    const vendorMatch = r.text.toLowerCase().includes(t.vendorName.toLowerCase()) || r.text.toLowerCase().includes(t.description.toLowerCase());
+                    return (dateDiff <= 2 && amountDiff && vendorMatch) || (dateDiff <= 1 && amountDiff);
+                });
+                t.matchedReceipt = match || null;
+                t.matchStatus = match ? 'Matched' : 'Unmatched';
+                t.conversionRate = t.itemTotal && t.sourceAmount ? (t.itemTotal / t.sourceAmount).toFixed(4) : 1.0000;
+            });
+        }
+
+        // Display HTML report
+        function displayReport() {
+            matchTransactions();
+            const output = document.getElementById('output');
+            let html = '<table><tr><th>Date</th><th>Merchant</th><th>Original Amount</th><th>Original Currency</th><th>Conversion Rate</th><th>Match Status</th><th>Receipt</th></tr>';
+            transactions.forEach(t => {
+                html += `<tr>
+                    <td>${t.purchaseDate}</td>
+                    <td>${t.vendorName || t.description}</td>
+                    <td>${t.sourceAmount.toFixed(2)}</td>
+                    <td>${t.sourceCurrency}</td>
+                    <td>${t.conversionRate}</td>
+                    <td class="${t.matchStatus.toLowerCase()}">${t.matchStatus}</td>
+                    <td>${t.matchedReceipt ? `<img src="data:image/png;base64,${t.matchedReceipt.imageData}" width="100">` : ''}</td>
+                </tr>`;
+            });
+            html += '</table>';
+            output.innerHTML = html;
+        }
+
+        // Generate Excel and ZIP
+        function generateReport() {
+            const { JSZip } = window;
+            if (!JSZip) {
+                alert('JSZip library not loaded. Please include it in the HTML.');
+                return;
+            }
+
+            matchTransactions();
+            const zip = new JSZip();
+            const excelData = [
+                ['Date', 'Merchant', 'Original Amount', 'Original Currency', 'Conversion Rate', 'Match Status', 'Receipt'],
+                ...transactions.map(t => [
+                    t.purchaseDate,
+                    t.vendorName || t.description,
+                    t.sourceAmount.toFixed(2),
+                    t.sourceCurrency,
+                    t.conversionRate,
+                    t.matchStatus,
+                    t.matchedReceipt?.receiptName || ''
+                ])
+            ];
+            const worksheet = XLSX.utils.aoa_to_sheet(excelData);
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, 'Consolidated Report');
+            const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+            zip.file('consolidated_report.xlsx', excelBuffer);
+
+            transactions.forEach((t, index) => {
+                if (t.matchedReceipt && t.matchedReceipt.imageData) {
+                    const byteString = atob(t.matchedReceipt.imageData);
+                    const ab = new ArrayBuffer(byteString.length);
+                    const ia = new Uint8Array(ab);
+                    for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+                    zip.file(`receipt_${index + 1}_${t.purchaseDate}.png`, ia);
+                }
+            });
+
+            zip.generateAsync({ type: 'blob' }).then(content => {
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(content);
+                link.download = 'report.zip';
+                link.click();
+            });
+            displayReport(); // Also display HTML report
+        }
+
+        // Load libraries
+        const script1 = document.createElement('script');
+        script1.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+        script1.onload = () => {
+            const script2 = document.createElement('script');
+            script2.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+            document.body.appendChild(script2);
+        };
+        document.body.appendChild(script1);
+    </script>
+</body>
+</html>
