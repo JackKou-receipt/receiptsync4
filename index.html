@@ -166,9 +166,9 @@
             }
         }
 
-        // Generic extraction of receipt data
+        // Improved extraction of receipt data
         function extractReceiptData(text) {
-            const lines = text.split('\n').map(line => line.trim().toLowerCase());
+            const lines = text.split('\n').map(line => line.trim());
             
             // Extract date
             const dateRegex = [
@@ -176,7 +176,8 @@
                 /\d{2}\/\d{2}\/\d{4}/, // MM/DD/YYYY
                 /\d{2}-\d{2}-\d{2}/,    // MM-DD-YY
                 /\d{1,2}-\d{1,2}-\d{4}/, // DD-MM-YYYY
-                /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2},\s+\d{4}/ // Jan 21, 2025
+                /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2},\s+\d{4}/i, // Jan 21, 2025
+                /(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},\s+\d{4}/i // January 21, 2025
             ];
             let receiptDate = null;
             for (let line of lines) {
@@ -192,9 +193,9 @@
 
             // Extract merchant (first few lines, capitalized words, or common keywords)
             let merchant = null;
-            const merchantKeywords = ['inc', 'co', 'ltd', 'hotel', 'restaurant', 'store', 'market'];
+            const merchantKeywords = ['inc', 'co', 'ltd', 'hotel', 'restaurant', 'store', 'market', 'uber', 'marriott'];
             for (let i = 0; i < Math.min(5, lines.length); i++) {
-                const line = lines[i];
+                const line = lines[i].toLowerCase();
                 if (line.match(/[A-Z\s]{5,}/) || merchantKeywords.some(keyword => line.includes(keyword))) {
                     merchant = lines[i].replace(/[^a-zA-Z\s]/g, '').trim().toUpperCase();
                     break;
@@ -203,7 +204,7 @@
 
             // Extract amount (look for "total", currency symbols, or largest number)
             let amount = null;
-            const amountRegex = /(?:total|amount|balance|sum)?\s*[$€£¥NT\$TWDUSD]?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/i;
+            const amountRegex = /(?:total|amount|balance|sum|twd|usd|nt\$)?\s*[$€£¥NT\$TWDUSD]?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/i;
             let amounts = [];
             for (let line of lines) {
                 const match = line.match(amountRegex);
@@ -219,13 +220,6 @@
 
         // Parse date with multiple formats
         function parseDate(dateStr) {
-            const formats = [
-                'YYYY/MM/DD',
-                'MM/DD/YYYY',
-                'MM-DD-YY',
-                'DD-MM-YYYY',
-                'MMM DD, YYYY'
-            ];
             dateStr = dateStr.replace(/\s+/g, ' ').trim();
             if (dateStr.match(/\d{2}-\d{2}-\d{2}/)) {
                 return new Date(`20${dateStr}`); // Assuming 20XX for MM-DD-YY
@@ -270,7 +264,7 @@
             reader.readAsText(csvFile);
         }
 
-        // Match receipts with transactions using a scoring system and top 3 matches
+        // Improved matching logic with top 3 matches
         function matchReceiptsWithTransactions() {
             reportData = [];
             for (let transaction of transactions) {
@@ -286,19 +280,19 @@
                 for (let receipt of receipts) {
                     let score = 0;
 
-                    // Date match (50 points if within 2 days, scaled down for larger gaps)
+                    // Date match (50 points if within 5 days, scaled down for larger gaps)
                     const dateDiff = receipt.date && purchaseDate ? 
                         Math.abs((receipt.date - purchaseDate) / (1000 * 60 * 60 * 24)) : Infinity;
-                    if (dateDiff <= 2) score += 50 - (dateDiff * 10);
+                    if (dateDiff <= 5) score += 50 - (dateDiff * 10);
 
                     // Vendor match (30 points for exact match, scaled down for partial)
-                    const vendorSimilarity = fuzzyMatch(vendorName, receipt.merchant || '');
+                    const vendorSimilarity = advancedFuzzyMatch(vendorName, receipt.merchant || '');
                     score += vendorSimilarity * 30;
 
                     // Amount match (20 points for exact match, scaled down for difference)
                     const amountDiff = receipt.amount && sourceAmount ? 
                         Math.abs(receipt.amount - sourceAmount) / sourceAmount : Infinity;
-                    if (amountDiff <= 0.2) score += 20 * (1 - amountDiff / 0.2);
+                    if (amountDiff <= 0.3) score += 20 * (1 - amountDiff / 0.3);
 
                     log(`Transaction: ${vendorName}, Receipt Merchant: ${receipt.merchant}, Score: ${score}, Date Diff: ${dateDiff}, Vendor Similarity: ${vendorSimilarity}, Amount Diff: ${amountDiff}`);
 
@@ -321,8 +315,9 @@
 
                 // Determine match status for each option
                 const matchStatuses = matches.map(match => ({
-                    status: match.score >= 50 ? 'Matched' : 'Not Matched',
-                    receipt: match.receipt
+                    status: match.score >= 40 ? 'Matched' : 'Not Matched',
+                    receipt: match.receipt,
+                    score: match.score
                 }));
 
                 // Calculate conversion rate
@@ -341,14 +336,76 @@
             }
         }
 
-        // Fuzzy match for vendor names
-        function fuzzyMatch(target, receiptMerchant) {
+        // Advanced fuzzy match for vendor names using Jaro-Winkler similarity
+        function advancedFuzzyMatch(target, receiptMerchant) {
             if (!target || !receiptMerchant) return 0;
-            target = target.replace(/[^a-zA-Z0-9]/g, '');
-            receiptMerchant = receiptMerchant.replace(/[^a-zA-Z0-9]/g, '');
-            if (receiptMerchant.includes(target)) return 1;
-            const words = receiptMerchant.split(/\s+/);
-            return words.some(word => word.includes(target)) ? 0.7 : 0;
+
+            target = target.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+            receiptMerchant = receiptMerchant.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+
+            // Split into words and check for significant overlap
+            const targetWords = target.split(/\s+/).filter(word => word.length > 3);
+            const receiptWords = receiptMerchant.split(/\s+/).filter(word => word.length > 3);
+
+            let maxSimilarity = 0;
+            for (let tWord of targetWords) {
+                for (let rWord of receiptWords) {
+                    const similarity = jaroWinklerSimilarity(tWord, rWord);
+                    if (similarity > maxSimilarity) maxSimilarity = similarity;
+                }
+            }
+
+            return maxSimilarity;
+        }
+
+        // Jaro-Winkler similarity implementation
+        function jaroWinklerSimilarity(s1, s2) {
+            let m = 0;
+            const l1 = s1.length, l2 = s2.length;
+            if (l1 === 0 || l2 === 0) return 0;
+
+            const matchDistance = Math.floor(Math.max(l1, l2) / 2) - 1;
+            const s1Matches = new Array(l1).fill(false);
+            const s2Matches = new Array(l2).fill(false);
+
+            // Find matching characters
+            for (let i = 0; i < l1; i++) {
+                const start = Math.max(0, i - matchDistance);
+                const end = Math.min(i + matchDistance + 1, l2);
+                for (let j = start; j < end; j++) {
+                    if (!s2Matches[j] && s1[i] === s2[j]) {
+                        s1Matches[i] = true;
+                        s2Matches[j] = true;
+                        m++;
+                        break;
+                    }
+                }
+            }
+
+            if (m === 0) return 0;
+
+            // Count transpositions
+            let t = 0, k = 0;
+            for (let i = 0; i < l1; i++) {
+                if (s1Matches[i]) {
+                    while (!s2Matches[k]) k++;
+                    if (s1[i] !== s2[k]) t++;
+                    k++;
+                }
+            }
+            t = t / 2;
+
+            // Jaro similarity
+            const jaro = (m / l1 + m / l2 + (m - t) / m) / 3;
+
+            // Winkler adjustment
+            let p = 0, l = 0;
+            const maxPrefix = 4;
+            for (let i = 0; i < Math.min(maxPrefix, l1, l2); i++) {
+                if (s1[i] === s2[i]) l++;
+                else break;
+            }
+            return jaro + l * 0.1 * (1 - jaro);
         }
 
         // Display the report in HTML
@@ -364,11 +421,11 @@
                     <td>${row.originalAmount}</td>
                     <td>${row.originalCurrency}</td>
                     <td>${row.conversionRate}</td>
-                    <td>${row.primaryMatch.status}</td>
+                    <td>${row.primaryMatch.status} (Score: ${row.primaryMatch.score.toFixed(2)})</td>
                     <td>${row.primaryMatch.receipt ? `<img src="data:image/jpeg;base64,${row.primaryMatch.receipt.base64}" alt="Receipt">` : 'N/A'}</td>
-                    <td>${row.secondaryMatch.status}</td>
+                    <td>${row.secondaryMatch.status} (Score: ${row.secondaryMatch.score.toFixed(2)})</td>
                     <td>${row.secondaryMatch.receipt ? `<img src="data:image/jpeg;base64,${row.secondaryMatch.receipt.base64}" alt="Receipt">` : 'N/A'}</td>
-                    <td>${row.tertiaryMatch.status}</td>
+                    <td>${row.tertiaryMatch.status} (Score: ${row.tertiaryMatch.score.toFixed(2)})</td>
                     <td>${row.tertiaryMatch.receipt ? `<img src="data:image/jpeg;base64,${row.tertiaryMatch.receipt.base64}" alt="Receipt">` : 'N/A'}</td>
                 `;
                 reportBody.appendChild(tr);
@@ -381,7 +438,7 @@
 
             // Generate Excel file
             const wsData = [
-                ['Date', 'Merchant', 'Original Amount', 'Original Currency', 'Conversion Rate', 'Primary Match Status', 'Primary Receipt', 'Secondary Match Status', 'Secondary Receipt', 'Tertiary Match Status', 'Tertiary Receipt'],
+                ['Date', 'Merchant', 'Original Amount', 'Original Currency', 'Conversion Rate', 'Primary Match Status', 'Primary Match Score', 'Primary Receipt', 'Secondary Match Status', 'Secondary Match Score', 'Secondary Receipt', 'Tertiary Match Status', 'Tertiary Match Score', 'Tertiary Receipt'],
                 ...reportData.map(row => [
                     row.date,
                     row.merchant,
@@ -389,10 +446,13 @@
                     row.originalCurrency,
                     row.conversionRate,
                     row.primaryMatch.status,
+                    row.primaryMatch.score.toFixed(2),
                     row.primaryMatch.receipt ? 'Receipt Attached' : 'N/A',
                     row.secondaryMatch.status,
+                    row.secondaryMatch.score.toFixed(2),
                     row.secondaryMatch.receipt ? 'Receipt Attached' : 'N/A',
                     row.tertiaryMatch.status,
+                    row.tertiaryMatch.score.toFixed(2),
                     row.tertiaryMatch.receipt ? 'Receipt Attached' : 'N/A'
                 ])
             ];
@@ -418,10 +478,13 @@
                                 <th>Original Currency</th>
                                 <th>Conversion Rate</th>
                                 <th>Primary Match Status</th>
+                                <th>Primary Match Score</th>
                                 <th>Primary Receipt</th>
                                 <th>Secondary Match Status</th>
+                                <th>Secondary Match Score</th>
                                 <th>Secondary Receipt</th>
                                 <th>Tertiary Match Status</th>
+                                <th>Tertiary Match Score</th>
                                 <th>Tertiary Receipt</th>
                             </tr>
                         </thead>
@@ -434,10 +497,13 @@
                                     <td>${row.originalCurrency}</td>
                                     <td>${row.conversionRate}</td>
                                     <td>${row.primaryMatch.status}</td>
+                                    <td>${row.primaryMatch.score.toFixed(2)}</td>
                                     <td>${row.primaryMatch.receipt ? 'Receipt Attached' : 'N/A'}</td>
                                     <td>${row.secondaryMatch.status}</td>
+                                    <td>${row.secondaryMatch.score.toFixed(2)}</td>
                                     <td>${row.secondaryMatch.receipt ? 'Receipt Attached' : 'N/A'}</td>
                                     <td>${row.tertiaryMatch.status}</td>
+                                    <td>${row.tertiaryMatch.score.toFixed(2)}</td>
                                     <td>${row.tertiaryMatch.receipt ? 'Receipt Attached' : 'N/A'}</td>
                                 </tr>
                             `).join('')}
