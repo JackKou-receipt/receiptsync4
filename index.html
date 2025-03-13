@@ -31,6 +31,7 @@
             border: 1px solid #ddd;
             padding: 8px;
             text-align: left;
+            word-wrap: break-word;
         }
         th {
             background-color: #f2f2f2;
@@ -83,8 +84,12 @@
                     <th>Original Amount</th>
                     <th>Original Currency</th>
                     <th>Conversion Rate</th>
-                    <th>Match Status</th>
-                    <th>Receipt</th>
+                    <th>Primary Match Status</th>
+                    <th>Primary Receipt</th>
+                    <th>Secondary Match Status</th>
+                    <th>Secondary Receipt</th>
+                    <th>Tertiary Match Status</th>
+                    <th>Tertiary Receipt</th>
                 </tr>
             </thead>
             <tbody id="reportBody"></tbody>
@@ -265,7 +270,7 @@
             reader.readAsText(csvFile);
         }
 
-        // Match receipts with transactions using a scoring system
+        // Match receipts with transactions using a scoring system and top 3 matches
         function matchReceiptsWithTransactions() {
             reportData = [];
             for (let transaction of transactions) {
@@ -276,7 +281,7 @@
                 const itemTotal = parseFloat(transaction['Item Total']);
                 const description = transaction['DESCRIPTIONS'].toLowerCase().trim();
 
-                let bestMatch = { score: 0, receipt: null };
+                let matches = [{ score: 0, receipt: null }, { score: 0, receipt: null }, { score: 0, receipt: null }];
 
                 for (let receipt of receipts) {
                     let score = 0;
@@ -297,13 +302,28 @@
 
                     log(`Transaction: ${vendorName}, Receipt Merchant: ${receipt.merchant}, Score: ${score}, Date Diff: ${dateDiff}, Vendor Similarity: ${vendorSimilarity}, Amount Diff: ${amountDiff}`);
 
-                    if (score > bestMatch.score) {
-                        bestMatch = { score, receipt };
+                    // Update top 3 matches
+                    if (score > matches[2].score) {
+                        if (score > matches[1].score) {
+                            if (score > matches[0].score) {
+                                matches[2] = matches[1];
+                                matches[1] = matches[0];
+                                matches[0] = { score, receipt };
+                            } else {
+                                matches[2] = matches[1];
+                                matches[1] = { score, receipt };
+                            }
+                        } else {
+                            matches[2] = { score, receipt };
+                        }
                     }
                 }
 
-                const matchStatus = bestMatch.score >= 50 ? 'Matched' : 'Not Matched';
-                const matchedReceipt = matchStatus === 'Matched' ? bestMatch.receipt : null;
+                // Determine match status for each option
+                const matchStatuses = matches.map(match => ({
+                    status: match.score >= 50 ? 'Matched' : 'Not Matched',
+                    receipt: match.receipt
+                }));
 
                 // Calculate conversion rate
                 const conversionRate = sourceCurrency === 'USD' ? 1 : (itemTotal / sourceAmount) || 0;
@@ -314,8 +334,9 @@
                     originalAmount: sourceAmount,
                     originalCurrency: sourceCurrency,
                     conversionRate: conversionRate.toFixed(4),
-                    matchStatus: matchStatus,
-                    receipt: matchedReceipt
+                    primaryMatch: matchStatuses[0],
+                    secondaryMatch: matchStatuses[1],
+                    tertiaryMatch: matchStatuses[2]
                 });
             }
         }
@@ -343,8 +364,12 @@
                     <td>${row.originalAmount}</td>
                     <td>${row.originalCurrency}</td>
                     <td>${row.conversionRate}</td>
-                    <td>${row.matchStatus}</td>
-                    <td>${row.receipt ? `<img src="data:image/jpeg;base64,${row.receipt.base64}" alt="Receipt">` : 'N/A'}</td>
+                    <td>${row.primaryMatch.status}</td>
+                    <td>${row.primaryMatch.receipt ? `<img src="data:image/jpeg;base64,${row.primaryMatch.receipt.base64}" alt="Receipt">` : 'N/A'}</td>
+                    <td>${row.secondaryMatch.status}</td>
+                    <td>${row.secondaryMatch.receipt ? `<img src="data:image/jpeg;base64,${row.secondaryMatch.receipt.base64}" alt="Receipt">` : 'N/A'}</td>
+                    <td>${row.tertiaryMatch.status}</td>
+                    <td>${row.tertiaryMatch.receipt ? `<img src="data:image/jpeg;base64,${row.tertiaryMatch.receipt.base64}" alt="Receipt">` : 'N/A'}</td>
                 `;
                 reportBody.appendChild(tr);
             });
@@ -356,15 +381,19 @@
 
             // Generate Excel file
             const wsData = [
-                ['Date', 'Merchant', 'Original Amount', 'Original Currency', 'Conversion Rate', 'Match Status', 'Receipt'],
+                ['Date', 'Merchant', 'Original Amount', 'Original Currency', 'Conversion Rate', 'Primary Match Status', 'Primary Receipt', 'Secondary Match Status', 'Secondary Receipt', 'Tertiary Match Status', 'Tertiary Receipt'],
                 ...reportData.map(row => [
                     row.date,
                     row.merchant,
                     row.originalAmount,
                     row.originalCurrency,
                     row.conversionRate,
-                    row.matchStatus,
-                    row.receipt ? 'Receipt Attached' : 'N/A'
+                    row.primaryMatch.status,
+                    row.primaryMatch.receipt ? 'Receipt Attached' : 'N/A',
+                    row.secondaryMatch.status,
+                    row.secondaryMatch.receipt ? 'Receipt Attached' : 'N/A',
+                    row.tertiaryMatch.status,
+                    row.tertiaryMatch.receipt ? 'Receipt Attached' : 'N/A'
                 ])
             ];
             const ws = XLSX.utils.aoa_to_sheet(wsData);
@@ -388,8 +417,12 @@
                                 <th>Original Amount</th>
                                 <th>Original Currency</th>
                                 <th>Conversion Rate</th>
-                                <th>Match Status</th>
-                                <th>Receipt</th>
+                                <th>Primary Match Status</th>
+                                <th>Primary Receipt</th>
+                                <th>Secondary Match Status</th>
+                                <th>Secondary Receipt</th>
+                                <th>Tertiary Match Status</th>
+                                <th>Tertiary Receipt</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -400,8 +433,12 @@
                                     <td>${row.originalAmount}</td>
                                     <td>${row.originalCurrency}</td>
                                     <td>${row.conversionRate}</td>
-                                    <td>${row.matchStatus}</td>
-                                    <td>${row.receipt ? 'Receipt Attached' : 'N/A'}</td>
+                                    <td>${row.primaryMatch.status}</td>
+                                    <td>${row.primaryMatch.receipt ? 'Receipt Attached' : 'N/A'}</td>
+                                    <td>${row.secondaryMatch.status}</td>
+                                    <td>${row.secondaryMatch.receipt ? 'Receipt Attached' : 'N/A'}</td>
+                                    <td>${row.tertiaryMatch.status}</td>
+                                    <td>${row.tertiaryMatch.receipt ? 'Receipt Attached' : 'N/A'}</td>
                                 </tr>
                             `).join('')}
                         </tbody>
