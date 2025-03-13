@@ -125,7 +125,7 @@
                     text: extractedText,
                     ...receiptData
                 });
-                log(`Processed receipt: Date=${receiptData.date?.toISOString().split('T')[0] || 'N/A'}, Merchant=${receiptData.merchant || 'N/A'}, Amount=${receiptData.amount || 'N/A'}`);
+                log(`Processed receipt: Date=${receiptData.date?.toISOString().split('T')[0] || 'N/A'}, Merchant=${receiptData.merchant || 'N/A'}, Amount=${receiptData.amount || 'N/A'} ${receiptData.currency || ''}`);
             }
         }
 
@@ -166,7 +166,7 @@
             }
         }
 
-        // Improved extraction of receipt data
+        // Improved extraction of receipt data with currency
         function extractReceiptData(text) {
             const lines = text.split('\n').map(line => line.trim());
             
@@ -202,20 +202,25 @@
                 }
             }
 
-            // Extract amount (look for "total", currency symbols, or largest number)
-            let amount = null;
-            const amountRegex = /(?:total|amount|balance|sum|twd|usd|nt\$)?\s*[$€£¥NT\$TWDUSD]?\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/i;
+            // Extract amount and currency
+            let amount = null, currency = null;
+            const amountRegex = /(?:(total|amount|balance|sum|twd|usd|nt\$)?\s*([$€£¥NT\$TWDUSD])\s*)?(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/i;
             let amounts = [];
             for (let line of lines) {
                 const match = line.match(amountRegex);
                 if (match) {
-                    const num = parseFloat(match[1].replace(/[^0-9.]/g, ''));
-                    amounts.push(num);
+                    const num = parseFloat(match[3].replace(/[^0-9.]/g, ''));
+                    const curr = match[2] ? match[2].toUpperCase() : null;
+                    amounts.push({ amount: num, currency: curr || 'N/A' });
                 }
             }
-            amount = amounts.length > 0 ? Math.max(...amounts) : null;
+            if (amounts.length > 0) {
+                const maxAmount = amounts.reduce((max, curr) => max.amount > curr.amount ? max : curr, amounts[0]);
+                amount = maxAmount.amount;
+                currency = maxAmount.currency;
+            }
 
-            return { date: receiptDate, merchant, amount };
+            return { date: receiptDate, merchant, amount, currency };
         }
 
         // Parse date with multiple formats
@@ -264,37 +269,43 @@
             reader.readAsText(csvFile);
         }
 
-        // Improved matching logic with top 3 matches
+        // Match receipts with transactions based on exact amount match
         function matchReceiptsWithTransactions() {
             reportData = [];
             for (let transaction of transactions) {
                 const purchaseDate = parseDate(transaction['Purchase Date']);
                 const vendorName = transaction['Vendor Name'].toLowerCase().trim();
                 const sourceAmount = parseFloat(transaction['Source Amount']);
-                const sourceCurrency = transaction['Source Currency'];
-                const itemTotal = parseFloat(transaction['Item Total']);
-                const description = transaction['DESCRIPTIONS'].toLowerCase().trim();
+                const sourceCurrency = transaction['Original Currency'].toUpperCase();
+                const itemTotal = parseFloat(transaction['Item Total'] || sourceAmount);
 
                 let matches = [{ score: 0, receipt: null }, { score: 0, receipt: null }, { score: 0, receipt: null }];
 
                 for (let receipt of receipts) {
+                    // Normalize amounts for comparison
+                    const receiptAmount = receipt.amount || 0;
+                    const receiptCurrency = (receipt.currency || 'N/A').toUpperCase();
+
+                    // Exact amount match is the primary criterion
+                    const isAmountMatch = receiptAmount === sourceAmount && 
+                                         (receiptCurrency === 'N/A' || receiptCurrency === sourceCurrency || 
+                                          (sourceCurrency === 'USD' && receiptCurrency.match(/\$/)) || 
+                                          (sourceCurrency === 'TWD' && receiptCurrency.match(/NT\$|TWD/)));
+
+                    if (!isAmountMatch) continue;
+
                     let score = 0;
 
-                    // Date match (50 points if within 5 days, scaled down for larger gaps)
-                    const dateDiff = receipt.date && purchaseDate ? 
-                        Math.abs((receipt.date - purchaseDate) / (1000 * 60 * 60 * 24)) : Infinity;
-                    if (dateDiff <= 5) score += 50 - (dateDiff * 10);
-
-                    // Vendor match (30 points for exact match, scaled down for partial)
+                    // Vendor match (30 points for exact match, scaled down with Jaro-Winkler)
                     const vendorSimilarity = advancedFuzzyMatch(vendorName, receipt.merchant || '');
                     score += vendorSimilarity * 30;
 
-                    // Amount match (20 points for exact match, scaled down for difference)
-                    const amountDiff = receipt.amount && sourceAmount ? 
-                        Math.abs(receipt.amount - sourceAmount) / sourceAmount : Infinity;
-                    if (amountDiff <= 0.3) score += 20 * (1 - amountDiff / 0.3);
+                    // Date match (20 points if within 5 days, scaled down)
+                    const dateDiff = receipt.date && purchaseDate ? 
+                        Math.abs((receipt.date - purchaseDate) / (1000 * 60 * 60 * 24)) : Infinity;
+                    if (dateDiff <= 5) score += 20 - (dateDiff * 4);
 
-                    log(`Transaction: ${vendorName}, Receipt Merchant: ${receipt.merchant}, Score: ${score}, Date Diff: ${dateDiff}, Vendor Similarity: ${vendorSimilarity}, Amount Diff: ${amountDiff}`);
+                    log(`Transaction: ${vendorName}, Receipt Merchant: ${receipt.merchant}, Amount Match: ${isAmountMatch}, Score: ${score}, Date Diff: ${dateDiff}, Vendor Similarity: ${vendorSimilarity}`);
 
                     // Update top 3 matches
                     if (score > matches[2].score) {
@@ -315,7 +326,7 @@
 
                 // Determine match status for each option
                 const matchStatuses = matches.map(match => ({
-                    status: match.score >= 40 ? 'Matched' : 'Not Matched',
+                    status: match.score >= 20 ? 'Matched' : 'Not Matched', // Minimum score with amount match
                     receipt: match.receipt,
                     score: match.score
                 }));
@@ -355,7 +366,7 @@
                 }
             }
 
-            return maxSimilarity;
+            return maxSimilarity > 0.7 ? maxSimilarity : 0; // Threshold of 70% similarity
         }
 
         // Jaro-Winkler similarity implementation
