@@ -4,152 +4,111 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Receipt Processor</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.5/xlsx.full.min.js"></script>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; }
+        #dropZone { border: 2px dashed #ccc; padding: 20px; text-align: center; margin-bottom: 20px; }
+        #dropZone.dragover { background-color: #e1e1e1; }
         #result { margin-top: 20px; }
-        table { border-collapse: collapse; width: 100%; margin-top: 10px; }
-        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-        th { background-color: #f2f2f2; }
-        .hidden { display: none; }
     </style>
 </head>
 <body>
     <h1>Receipt Processor</h1>
-    <input type="file" id="receiptInput" accept="image/*,.pdf" multiple />
+    <div id="dropZone">Drop your receipt images or PDFs here, or click to select files.</div>
     <button onclick="processReceipts()">Process Receipts</button>
     <div id="result"></div>
-    <button id="downloadBtn" class="hidden" onclick="downloadExcel()">Download as Excel</button>
 
     <script>
-        // Replace with your Google Cloud Vision API key
-        const API_KEY = 'AIzaSyDID5ib0eHNVrBYG0e5vfWQ9RkVinX4hNg';
+        const dropZone = document.getElementById('dropZone');
+        const resultDiv = document.getElementById('result');
+        let files = [];
+
+        // Handle file drop and selection
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            files = Array.from(e.dataTransfer.files);
+            displayFiles();
+        });
+
+        dropZone.addEventListener('click', () => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.multiple = true;
+            input.accept = 'image/*,application/pdf';
+            input.onchange = (e) => {
+                files = Array.from(e.target.files);
+                displayFiles();
+            };
+            input.click();
+        });
+
+        function displayFiles() {
+            resultDiv.innerHTML = `<h3>Selected Files:</h3><ul>${files.map(file => `<li>${file.name}</li>`).join('')}</ul>`;
+        }
 
         async function processReceipts() {
-            const fileInput = document.getElementById('receiptInput');
-            const files = fileInput.files;
-            if (!files.length) {
-                alert('Please upload at least one receipt image or PDF.');
-                return;
-            }
-
-            const resultDiv = document.getElementById('result');
-            resultDiv.innerHTML = '<h2>Extracted Results:</h2>';
-            const allData = []; // To store data for Excel
+            resultDiv.innerHTML = '<h3>Processing...</h3>';
+            const apiKey = 'AIzaSyDID5ib0eHNVrBYG0e5vfWQ9RkVinX4hNg'; // Replace with your Google Vision API Key
+            const results = [];
 
             for (const file of files) {
-                const base64 = await new Promise((resolve) => {
-                    const reader = new FileReader();
-                    reader.onload = (e) => resolve(e.target.result.split(',')[1]);
-                    reader.readAsDataURL(file);
-                });
-
-                const apiUrl = `https://vision.googleapis.com/v1/images:annotate?key=${API_KEY}`;
-                const requestBody = {
-                    requests: [{
-                        image: { content: base64 },
-                        features: [{ type: 'TEXT_DETECTION', maxResults: 1 }]
-                    }]
-                };
+                const formData = new FormData();
+                formData.append('file', file);
 
                 try {
-                    const response = await fetch(apiUrl, {
+                    const base64 = await convertFileToBase64(file);
+                    const response = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`, {
                         method: 'POST',
-                        body: JSON.stringify(requestBody),
-                        headers: { 'Content-Type': 'application/json' }
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            requests: [{
+                                image: { content: base64.split(',')[1] },
+                                features: [{ type: 'TEXT_DETECTION', maxResults: 1 }]
+                            }]
+                        })
                     });
+
                     const data = await response.json();
+                    const text = data.responses[0]?.fullTextAnnotation?.text || 'No text detected';
+                    results.push({ filename: file.name, text });
 
-                    if (data.responses && data.responses[0].fullTextAnnotation) {
-                        const extractedText = data.responses[0].fullTextAnnotation.text;
-                        const parsedData = parseReceiptData(extractedText, file);
-                        displayResult(extractedText, parsedData, file);
-                        allData.push(parsedData);
-                    } else {
-                        alert(`No text detected in ${file.name}.`);
-                    }
+                    // Convert to Excel
+                    const wb = XLSX.utils.book_new();
+                    const wsData = [['Field', 'Value']];
+                    const lines = text.split('\n').filter(line => line.trim());
+                    lines.forEach(line => {
+                        const [key, value] = line.split(':').map(s => s.trim());
+                        if (key && value) wsData.push([key, value]);
+                    });
+                    const ws = XLSX.utils.aoa_to_sheet(wsData);
+                    XLSX.utils.book_append_sheet(wb, ws, 'ReceiptData');
+                    XLSX.writeFile(wb, `${file.name}_extracted.xlsx`);
                 } catch (error) {
-                    console.error(`Error processing ${file.name}:`, error);
-                    alert(`Error processing ${file.name}. Check the console for details.`);
+                    resultDiv.innerHTML += `<p>Error processing ${file.name}: ${error.message}</p>`;
                 }
             }
 
-            if (allData.length) {
-                generateExcel(allData);
-                document.getElementById('downloadBtn').classList.remove('hidden');
-            }
+            resultDiv.innerHTML += '<h3>Results:</h3><ul>' + results.map(r => `<li>${r.filename}: <pre>${r.text}</pre></li>`).join('') + '</ul>';
+            alert('Excel files have been generated for each receipt.');
         }
 
-        function parseReceiptData(text, file) {
-            const lines = text.split('\n').map(line => line.trim()).filter(line => line);
-            let date, merchant, amount, currency;
-
-            lines.forEach(line => {
-                if (line.includes('Date') || line.includes('2025')) date = line;
-                if (line.includes('MARRIOTT') || line.includes('KAOHSIUNG') || line.includes('THSR')) merchant = line;
-                if (line.includes('NT$') || line.includes('$')) {
-                    const match = line.match(/[\d,.]+/);
-                    if (match) amount = match[0];
-                    currency = line.includes('NT$') ? 'NTD' : 'USD';
-                }
+        function convertFileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
             });
-
-            return {
-                Date: date || 'Not found',
-                Merchant: merchant || 'Not found',
-                'Original Amount': amount || 'Not found',
-                'Original Currency': currency || 'Not found',
-                'Converting Rate': '',
-                'Match Status': '',
-                Receipt: file.name
-            };
-        }
-
-        function displayResult(text, data, file) {
-            const resultDiv = document.getElementById('result');
-            resultDiv.innerHTML += `<h3>Receipt: ${file.name}</h3><pre>${text}</pre>`;
-            const table = `
-                <table>
-                    <tr><th>Field</th><th>Value</th></tr>
-                    <tr><td>Date</td><td>${data.Date}</td></tr>
-                    <tr><td>Merchant</td><td>${data.Merchant}</td></tr>
-                    <tr><td>Original Amount</td><td>${data['Original Amount']}</td></tr>
-                    <tr><td>Original Currency</td><td>${data['Original Currency']}</td></tr>
-                    <tr><td>Converting Rate</td><td>${data['Converting Rate']}</td></tr>
-                    <tr><td>Match Status</td><td>${data['Match Status']}</td></tr>
-                    <tr><td>Receipt</td><td><a href="${URL.createObjectURL(file)}" download>${file.name}</a></td></tr>
-                </table>
-            `;
-            resultDiv.innerHTML += table;
-        }
-
-        function generateExcel(data) {
-            const wsData = [
-                ['Date', 'Merchant', 'Original Amount', 'Original Currency', 'Converting Rate', 'Match Status', 'Receipt'],
-                ...data.map(item => [
-                    item.Date, item.Merchant, item['Original Amount'], item['Original Currency'],
-                    item['Converting Rate'], item['Match Status'], item.Receipt
-                ])
-            ];
-            const ws = XLSX.utils.aoa_to_sheet(wsData);
-            const wb = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wb, ws, 'Receipts');
-            const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-            saveExcel(excelBuffer);
-        }
-
-        function saveExcel(buffer) {
-            const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = 'receipts_data.xlsx';
-            link.click();
-            URL.revokeObjectURL(url);
-        }
-
-        function downloadExcel() {
-            alert('Excel file has been generated. Check your downloads folder.');
         }
     </script>
 </body>
