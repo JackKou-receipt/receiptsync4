@@ -125,7 +125,7 @@
                     text: extractedText,
                     ...receiptData
                 });
-                log(`Processed receipt: Date=${receiptData.date?.toISOString().split('T')[0] || 'N/A'}, Merchant=${receiptData.merchant || 'N/A'}, Amount=${receiptData.amount || 'N/A'} ${receiptData.currency || ''}`);
+                log(`Processed receipt: Date=${receiptData.date?.toISOString().split('T')[0] || 'N/A'}, Merchant=${receiptData.merchant || 'N/A'}, Amount=${receiptData.amount || 'N/A'} ${receiptData.currency || 'N/A'}`);
             }
         }
 
@@ -166,7 +166,7 @@
             }
         }
 
-        // Improved extraction of receipt data with currency
+        // Improved extraction of receipt data
         function extractReceiptData(text) {
             const lines = text.split('\n').map(line => line.trim());
             
@@ -176,6 +176,7 @@
                 /\d{2}\/\d{2}\/\d{4}/, // MM/DD/YYYY
                 /\d{2}-\d{2}-\d{2}/,    // MM-DD-YY
                 /\d{1,2}-\d{1,2}-\d{4}/, // DD-MM-YYYY
+                /\d{1,2}\/\d{1,2}\/\d{2}/, // DD/MM/YY
                 /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2},\s+\d{4}/i, // Jan 21, 2025
                 /(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},\s+\d{4}/i // January 21, 2025
             ];
@@ -191,27 +192,40 @@
                 if (receiptDate) break;
             }
 
-            // Extract merchant (first few lines, capitalized words, or common keywords)
+            // Extract merchant
             let merchant = null;
-            const merchantKeywords = ['inc', 'co', 'ltd', 'hotel', 'restaurant', 'store', 'market', 'uber', 'marriott'];
-            for (let i = 0; i < Math.min(5, lines.length); i++) {
-                const line = lines[i].toLowerCase();
-                if (line.match(/[A-Z\s]{5,}/) || merchantKeywords.some(keyword => line.includes(keyword))) {
-                    merchant = lines[i].replace(/[^a-zA-Z\s]/g, '').trim().toUpperCase();
-                    break;
+            const merchantKeywords = ['uber', 'marriott', 'taiwan high speed rail', 'eva air', 'twglobal', 'sunshine limousine'];
+            const ignoreKeywords = ['qr code', 'collected', 'help with an order', 'order', 'tax', 'total', 'amount'];
+            for (let line of lines) {
+                const lowerLine = line.toLowerCase();
+                if (ignoreKeywords.some(keyword => lowerLine.includes(keyword))) continue;
+                for (let keyword of merchantKeywords) {
+                    if (lowerLine.includes(keyword)) {
+                        merchant = keyword.toUpperCase();
+                        if (keyword === 'taiwan high speed rail') merchant = 'TAIWAN HIGH SPEED RAIL CO';
+                        if (keyword === 'marriott') merchant = 'MARRIOTT HOTEL KAOHSIU';
+                        if (keyword === 'uber') merchant = 'UBER';
+                        if (keyword === 'eva air') merchant = 'EVA AIR';
+                        if (keyword === 'twglobal') merchant = 'TWGLOBAL MALL';
+                        if (keyword === 'sunshine limousine') merchant = 'SUNSHINE LIMOUSINE';
+                        break;
+                    }
                 }
+                if (merchant) break;
             }
 
             // Extract amount and currency
             let amount = null, currency = null;
-            const amountRegex = /(?:(total|amount|balance|sum|twd|usd|nt\$)?\s*([$€£¥NT\$TWDUSD])\s*)?(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/i;
+            const amountRegex = /(?:total|amount|balance|sum|twd|usd|nt\$)?\s*([$€£¥NT\$TWDUSD])\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/i;
             let amounts = [];
             for (let line of lines) {
                 const match = line.match(amountRegex);
                 if (match) {
-                    const num = parseFloat(match[3].replace(/[^0-9.]/g, ''));
-                    const curr = match[2] ? match[2].toUpperCase() : null;
-                    amounts.push({ amount: num, currency: curr || 'N/A' });
+                    const num = parseFloat(match[2].replace(/[^0-9.]/g, ''));
+                    let curr = match[1] ? match[1].toUpperCase() : 'TWD'; // Default to TWD if ambiguous
+                    if (curr === '$') curr = 'TWD'; // Assume TWD for '$' in this context
+                    if (curr === 'NT$') curr = 'TWD';
+                    amounts.push({ amount: num, currency: curr });
                 }
             }
             if (amounts.length > 0) {
@@ -228,6 +242,10 @@
             dateStr = dateStr.replace(/\s+/g, ' ').trim();
             if (dateStr.match(/\d{2}-\d{2}-\d{2}/)) {
                 return new Date(`20${dateStr}`); // Assuming 20XX for MM-DD-YY
+            }
+            if (dateStr.match(/\d{1,2}\/\d{1,2}\/\d{2}/)) {
+                const parts = dateStr.split('/');
+                return new Date(`20${parts[2]}-${parts[1]}-${parts[0]}`); // DD/MM/YY
             }
             if (dateStr.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i)) {
                 return new Date(dateStr);
@@ -284,13 +302,13 @@
                 for (let receipt of receipts) {
                     // Normalize amounts for comparison
                     const receiptAmount = receipt.amount || 0;
-                    const receiptCurrency = (receipt.currency || 'N/A').toUpperCase();
+                    const receiptCurrency = (receipt.currency || 'TWD').toUpperCase();
 
                     // Exact amount match is the primary criterion
                     const isAmountMatch = receiptAmount === sourceAmount && 
-                                         (receiptCurrency === 'N/A' || receiptCurrency === sourceCurrency || 
+                                         (receiptCurrency === sourceCurrency || 
                                           (sourceCurrency === 'USD' && receiptCurrency.match(/\$/)) || 
-                                          (sourceCurrency === 'TWD' && receiptCurrency.match(/NT\$|TWD/)));
+                                          (sourceCurrency === 'TWD' && receiptCurrency.match(/TWD/)));
 
                     if (!isAmountMatch) continue;
 
@@ -326,7 +344,7 @@
 
                 // Determine match status for each option
                 const matchStatuses = matches.map(match => ({
-                    status: match.score >= 20 ? 'Matched' : 'Not Matched', // Minimum score with amount match
+                    status: match.score >= 20 ? 'Matched' : 'Not Matched',
                     receipt: match.receipt,
                     score: match.score
                 }));
