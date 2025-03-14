@@ -61,6 +61,7 @@
             const apiKey = 'AIzaSyDID5ib0eHNVrBYG0e5vfWQ9RkVinX4hNg'; // Replace with your Google Vision API Key
             const results = [];
 
+            // Process each file and extract text
             for (const file of files) {
                 const base64 = await convertFileToBase64(file);
                 try {
@@ -77,25 +78,46 @@
 
                     const data = await response.json();
                     const text = data.responses[0]?.fullTextAnnotation?.text || 'No text detected';
-                    results.push({ filename: file.name, text });
+                    const extractedData = parseReceiptText(text);
+                    results.push({ filename: file.name, extractedData });
                 } catch (error) {
                     resultDiv.innerHTML += `<p>Error processing ${file.name}: ${error.message}</p>`;
                 }
             }
 
-            // Prepare data for Excel
+            // Prepare data for a single Excel file
             const wb = XLSX.utils.book_new();
-            const wsData = [['Filename', 'Extracted Text']];
+            const wsData = [['Filename', 'Field', 'Value']];
             results.forEach(result => {
-                wsData.push([result.filename, result.text]);
+                const { filename, extractedData } = result;
+                extractedData.forEach(({ field, value }) => {
+                    wsData.push([filename, field, value]);
+                });
             });
             const ws = XLSX.utils.aoa_to_sheet(wsData);
             XLSX.utils.book_append_sheet(wb, ws, 'ReceiptData');
             XLSX.writeFile(wb, `all_receipts_extracted_${new Date().toISOString().split('T')[0]}.xlsx`);
 
             // Display results
-            resultDiv.innerHTML += '<h3>Results:</h3><ul>' + results.map(r => `<li>${r.filename}: <pre>${r.text}</pre></li>`).join('') + '</ul>';
+            resultDiv.innerHTML += '<h3>Results:</h3><ul>' + results.map(r => {
+                const formattedData = r.extractedData.map(d => `${d.field}: ${d.value}`).join('<br>');
+                return `<li>${r.filename}: <pre>${formattedData}</pre></li>`;
+            }).join('') + '</ul>';
             alert('A single Excel file has been generated with all receipt data.');
+        }
+
+        function parseReceiptText(text) {
+            const lines = text.split('\n').filter(line => line.trim());
+            const parsedData = [];
+            lines.forEach(line => {
+                if (line.includes(':')) {
+                    const [field, value] = line.split(':').map(s => s.trim());
+                    if (field && value) parsedData.push({ field, value });
+                } else {
+                    parsedData.push({ field: 'Raw Text', value: line });
+                }
+            });
+            return parsedData;
         }
 
         function convertFileToBase64(file) {
