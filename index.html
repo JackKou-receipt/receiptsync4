@@ -16,8 +16,8 @@
 </head>
 <body>
     <h1>Receipt Processor</h1>
-    <input type="file" id="receiptInput" accept="image/*,.pdf" />
-    <button onclick="processReceipt()">Process Receipt</button>
+    <input type="file" id="receiptInput" accept="image/*,.pdf" multiple />
+    <button onclick="processReceipts()">Process Receipts</button>
     <div id="result"></div>
     <button id="downloadBtn" class="hidden" onclick="downloadExcel()">Download as Excel</button>
 
@@ -25,64 +25,68 @@
         // Replace with your Google Cloud Vision API key
         const API_KEY = 'AIzaSyDID5ib0eHNVrBYG0e5vfWQ9RkVinX4hNg';
 
-        async function processReceipt() {
+        async function processReceipts() {
             const fileInput = document.getElementById('receiptInput');
-            const file = fileInput.files[0];
-            if (!file) {
-                alert('Please upload a receipt image or PDF.');
+            const files = fileInput.files;
+            if (!files.length) {
+                alert('Please upload at least one receipt image or PDF.');
                 return;
             }
 
-            const formData = new FormData();
-            formData.append('file', file);
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<h2>Extracted Results:</h2>';
+            const allData = []; // To store data for Excel
 
-            // Convert file to base64 for API
-            const base64 = await new Promise((resolve) => {
-                const reader = new FileReader();
-                reader.onload = (e) => resolve(e.target.result.split(',')[1]);
-                reader.readAsDataURL(file);
-            });
-
-            // Google Vision API request
-            const apiUrl = `https://vision.googleapis.com/v1/images:annotate?key=${API_KEY}`;
-            const requestBody = {
-                requests: [{
-                    image: { content: base64 },
-                    features: [{ type: 'TEXT_DETECTION', maxResults: 1 }]
-                }]
-            };
-
-            try {
-                const response = await fetch(apiUrl, {
-                    method: 'POST',
-                    body: JSON.stringify(requestBody),
-                    headers: { 'Content-Type': 'application/json' }
+            for (const file of files) {
+                const base64 = await new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => resolve(e.target.result.split(',')[1]);
+                    reader.readAsDataURL(file);
                 });
-                const data = await response.json();
 
-                if (data.responses && data.responses[0].fullTextAnnotation) {
-                    const extractedText = data.responses[0].fullTextAnnotation.text;
-                    displayResult(extractedText);
-                } else {
-                    alert('No text detected in the image.');
+                const apiUrl = `https://vision.googleapis.com/v1/images:annotate?key=${API_KEY}`;
+                const requestBody = {
+                    requests: [{
+                        image: { content: base64 },
+                        features: [{ type: 'TEXT_DETECTION', maxResults: 1 }]
+                    }]
+                };
+
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        body: JSON.stringify(requestBody),
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    const data = await response.json();
+
+                    if (data.responses && data.responses[0].fullTextAnnotation) {
+                        const extractedText = data.responses[0].fullTextAnnotation.text;
+                        const parsedData = parseReceiptData(extractedText, file);
+                        displayResult(extractedText, parsedData, file);
+                        allData.push(parsedData);
+                    } else {
+                        alert(`No text detected in ${file.name}.`);
+                    }
+                } catch (error) {
+                    console.error(`Error processing ${file.name}:`, error);
+                    alert(`Error processing ${file.name}. Check the console for details.`);
                 }
-            } catch (error) {
-                console.error('Error:', error);
-                alert('Error processing the receipt. Check the console for details.');
+            }
+
+            if (allData.length) {
+                generateExcel(allData);
+                document.getElementById('downloadBtn').classList.remove('hidden');
             }
         }
 
-        function displayResult(text) {
-            const resultDiv = document.getElementById('result');
-            resultDiv.innerHTML = '<h2>Extracted Text:</h2><pre>' + text + '</pre>';
-
-            // Parse key information (customize based on receipt format)
+        function parseReceiptData(text, file) {
             const lines = text.split('\n').map(line => line.trim()).filter(line => line);
             let date, merchant, amount, currency;
 
             lines.forEach(line => {
                 if (line.includes('Date') || line.includes('2025')) date = line;
-                if (line.includes('MARRIOTT') || line.includes('KAOHSIUNG')) merchant = line;
+                if (line.includes('MARRIOTT') || line.includes('KAOHSIUNG') || line.includes('THSR')) merchant = line;
                 if (line.includes('NT$') || line.includes('$')) {
                     const match = line.match(/[\d,.]+/);
                     if (match) amount = match[0];
@@ -90,33 +94,48 @@
                 }
             });
 
-            // Create table
+            return {
+                Date: date || 'Not found',
+                Merchant: merchant || 'Not found',
+                'Original Amount': amount || 'Not found',
+                'Original Currency': currency || 'Not found',
+                'Converting Rate': '',
+                'Match Status': '',
+                Receipt: file.name
+            };
+        }
+
+        function displayResult(text, data, file) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML += `<h3>Receipt: ${file.name}</h3><pre>${text}</pre>`;
             const table = `
                 <table>
                     <tr><th>Field</th><th>Value</th></tr>
-                    <tr><td>Date</td><td>${date || 'Not found'}</td></tr>
-                    <tr><td>Merchant</td><td>${merchant || 'Not found'}</td></tr>
-                    <tr><td>Original Amount</td><td>${amount || 'Not found'}</td></tr>
-                    <tr><td>Original Currency</td><td>${currency || 'Not found'}</td></tr>
-                    <tr><td>Converting Rate</td><td>N/A (CSV required)</td></tr>
-                    <tr><td>Match Status</td><td>N/A (CSV required)</td></tr>
-                    <tr><td>Receipt</td><td><a href="${URL.createObjectURL(document.getElementById('receiptInput').files[0])}" download>View Receipt</a></td></tr>
+                    <tr><td>Date</td><td>${data.Date}</td></tr>
+                    <tr><td>Merchant</td><td>${data.Merchant}</td></tr>
+                    <tr><td>Original Amount</td><td>${data['Original Amount']}</td></tr>
+                    <tr><td>Original Currency</td><td>${data['Original Currency']}</td></tr>
+                    <tr><td>Converting Rate</td><td>${data['Converting Rate']}</td></tr>
+                    <tr><td>Match Status</td><td>${data['Match Status']}</td></tr>
+                    <tr><td>Receipt</td><td><a href="${URL.createObjectURL(file)}" download>${file.name}</a></td></tr>
                 </table>
             `;
             resultDiv.innerHTML += table;
+        }
 
-            // Prepare data for Excel
+        function generateExcel(data) {
             const wsData = [
                 ['Date', 'Merchant', 'Original Amount', 'Original Currency', 'Converting Rate', 'Match Status', 'Receipt'],
-                [date || '', merchant || '', amount || '', currency || '', '', '', '']
+                ...data.map(item => [
+                    item.Date, item.Merchant, item['Original Amount'], item['Original Currency'],
+                    item['Converting Rate'], item['Match Status'], item.Receipt
+                ])
             ];
             const ws = XLSX.utils.aoa_to_sheet(wsData);
             const wb = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(wb, ws, 'Receipts');
             const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
             saveExcel(excelBuffer);
-
-            document.getElementById('downloadBtn').classList.remove('hidden');
         }
 
         function saveExcel(buffer) {
@@ -124,13 +143,12 @@
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = 'receipt_data.xlsx';
+            link.download = 'receipts_data.xlsx';
             link.click();
             URL.revokeObjectURL(url);
         }
 
         function downloadExcel() {
-            // This will trigger the download again if needed
             alert('Excel file has been generated. Check your downloads folder.');
         }
     </script>
