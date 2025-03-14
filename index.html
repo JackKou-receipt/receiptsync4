@@ -3,586 +3,135 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Receipt Transaction Matcher</title>
+    <title>Receipt Processor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 20px;
-            max-width: 1000px;
-            margin: 0 auto;
-        }
-        h1 {
-            text-align: center;
-        }
-        .section {
-            margin-bottom: 20px;
-        }
-        .input-section {
-            border: 1px solid #ccc;
-            padding: 15px;
-            border-radius: 5px;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 20px;
-        }
-        th, td {
-            border: 1px solid #ddd;
-            padding: 8px;
-            text-align: left;
-            word-wrap: break-word;
-        }
-        th {
-            background-color: #f2f2f2;
-        }
-        button {
-            padding: 10px 20px;
-            background-color: #4CAF50;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-        }
-        button:hover {
-            background-color: #45a049;
-        }
-        img {
-            max-width: 100px;
-            height: auto;
-        }
-        #log {
-            margin-top: 20px;
-            color: #333;
-        }
-        .error {
-            color: red;
-        }
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        #result { margin-top: 20px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .hidden { display: none; }
     </style>
 </head>
 <body>
-    <h1>Receipt Transaction Matcher</h1>
-
-    <div class="section input-section">
-        <h2>Step 1: Upload Receipts (Images or PDFs)</h2>
-        <input type="file" id="receiptInput" multiple accept="image/*,application/pdf">
-    </div>
-
-    <div class="section input-section">
-        <h2>Step 2: Upload Credit Card Transactions (CSV)</h2>
-        <input type="file" id="csvInput" accept=".csv">
-    </div>
-
-    <div class="section">
-        <button onclick="processFiles()">Process</button>
-    </div>
-
-    <div class="section">
-        <h2>Consolidated Report</h2>
-        <table id="reportTable">
-            <thead>
-                <tr>
-                    <th>Date</th>
-                    <th>Merchant</th>
-                    <th>Original Amount</th>
-                    <th>Original Currency</th>
-                    <th>Conversion Rate</th>
-                    <th>Primary Match Status</th>
-                    <th>Primary Receipt</th>
-                    <th>Secondary Match Status</th>
-                    <th>Secondary Receipt</th>
-                    <th>Tertiary Match Status</th>
-                    <th>Tertiary Receipt</th>
-                </tr>
-            </thead>
-            <tbody id="reportBody"></tbody>
-        </table>
-        <div style="margin-top: 20px;">
-            <button onclick="exportReports()">Export Reports (ZIP)</button>
-        </div>
-    </div>
-
-    <div id="log"></div>
-
-    <!-- Libraries -->
-    <script src="https://unpkg.com/papaparse@5.3.2/papaparse.min.js"></script>
-    <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
-    <script src="https://unpkg.com/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+    <h1>Receipt Processor</h1>
+    <input type="file" id="receiptInput" accept="image/*,.pdf" />
+    <button onclick="processReceipt()">Process Receipt</button>
+    <div id="result"></div>
+    <button id="downloadBtn" class="hidden" onclick="downloadExcel()">Download as Excel</button>
 
     <script>
-        let receipts = [];
-        let transactions = [];
-        let reportData = [];
+        // Replace with your Google Cloud Vision API key
+        const API_KEY = 'AIzaSyDID5ib0eHNVrBYG0e5vfWQ9RkVinX4hNg';
 
-        // Step 1: Handle receipt uploads and OCR
-        async function processReceipts(files) {
-            receipts = [];
-            if (!files.length) {
-                log('<span class="error">No receipt files uploaded.</span>');
+        async function processReceipt() {
+            const fileInput = document.getElementById('receiptInput');
+            const file = fileInput.files[0];
+            if (!file) {
+                alert('Please upload a receipt image or PDF.');
                 return;
             }
-            for (let file of files) {
-                try {
-                    const base64 = await fileToBase64(file);
-                    const extractedText = await extractTextFromImage(base64);
-                    const receiptData = extractReceiptData(extractedText);
-                    receipts.push({
-                        file: file,
-                        base64: base64,
-                        text: extractedText,
-                        ...receiptData
-                    });
-                    log(`Processed receipt: Date=${receiptData.date?.toISOString().split('T')[0] || 'N/A'}, Merchant=${receiptData.merchant || 'N/A'}, Amount=${receiptData.amount || 'N/A'} ${receiptData.currency || 'N/A'}`);
-                } catch (error) {
-                    log(`<span class="error">Error processing receipt ${file.name}: ${error.message}</span>`);
-                }
-            }
-        }
 
-        // Convert file to base64
-        function fileToBase64(file) {
-            return new Promise((resolve, reject) => {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            // Convert file to base64 for API
+            const base64 = await new Promise((resolve) => {
                 const reader = new FileReader();
-                reader.onload = () => resolve(reader.result.split(',')[1]);
-                reader.onerror = (e) => reject(new Error('Failed to read file'));
+                reader.onload = (e) => resolve(e.target.result.split(',')[1]);
                 reader.readAsDataURL(file);
             });
-        }
 
-        // Extract text using Google Vision API with error handling
-        async function extractTextFromImage(base64) {
-            const apiKey = 'AIzaSyDID5ib0eHNVrBYG0e5vfWQ9RkVinX4hNg'; // Replace with your Google Vision API key
-            if (!apiKey || apiKey === 'YOUR_GOOGLE_API_KEY') {
-                throw new Error('Google Vision API key is missing or invalid. Please replace YOUR_GOOGLE_API_KEY with a valid key.');
-            }
-            const url = `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`;
+            // Google Vision API request
+            const apiUrl = `https://vision.googleapis.com/v1/images:annotate?key=${API_KEY}`;
             const requestBody = {
-                requests: [
-                    {
-                        image: { content: base64 },
-                        features: [{ type: 'TEXT_DETECTION' }]
-                    }
-                ]
+                requests: [{
+                    image: { content: base64 },
+                    features: [{ type: 'TEXT_DETECTION', maxResults: 1 }]
+                }]
             };
 
             try {
-                const response = await fetch(url, {
+                const response = await fetch(apiUrl, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(requestBody)
+                    body: JSON.stringify(requestBody),
+                    headers: { 'Content-Type': 'application/json' }
                 });
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 const data = await response.json();
-                return data.responses[0]?.textAnnotations[0]?.description || 'No text detected';
-            } catch (error) {
-                log(`<span class="error">Vision API error: ${error.message}</span>`);
-                throw error;
-            }
-        }
 
-        // Improved extraction of receipt data with currency
-        function extractReceiptData(text) {
-            const lines = text.split('\n').map(line => line.trim());
-            
-            // Extract date
-            const dateRegex = [
-                /\d{4}\/\d{2}\/\d{2}/, // YYYY/MM/DD
-                /\d{2}\/\d{2}\/\d{4}/, // MM/DD/YYYY
-                /\d{2}-\d{2}-\d{2}/,    // MM-DD-YY
-                /\d{1,2}-\d{1,2}-\d{4}/, // DD-MM-YYYY
-                /\d{1,2}\/\d{1,2}\/\d{2}/, // DD/MM/YY
-                /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2},\s+\d{4}/i, // Jan 21, 2025
-                /(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},\s+\d{4}/i // January 21, 2025
-            ];
-            let receiptDate = null;
-            for (let line of lines) {
-                for (let regex of dateRegex) {
-                    const match = line.match(regex);
-                    if (match) {
-                        receiptDate = parseDate(match[0]);
-                        break;
-                    }
-                }
-                if (receiptDate) break;
-            }
-
-            // Extract merchant
-            let merchant = null;
-            const merchantKeywords = ['uber', 'marriott', 'taiwan high speed rail', 'eva air', 'twglobal', 'sunshine limousine'];
-            const ignoreKeywords = ['qr code', 'collected', 'help with an order', 'order', 'tax', 'total', 'amount'];
-            for (let line of lines) {
-                const lowerLine = line.toLowerCase();
-                if (ignoreKeywords.some(keyword => lowerLine.includes(keyword))) continue;
-                for (let keyword of merchantKeywords) {
-                    if (lowerLine.includes(keyword)) {
-                        merchant = keyword.toUpperCase();
-                        if (keyword === 'taiwan high speed rail') merchant = 'TAIWAN HIGH SPEED RAIL CO';
-                        if (keyword === 'marriott') merchant = 'MARRIOTT HOTEL KAOHSIU';
-                        if (keyword === 'uber') merchant = 'UBER';
-                        if (keyword === 'eva air') merchant = 'EVA AIR';
-                        if (keyword === 'twglobal') merchant = 'TWGLOBAL MALL';
-                        if (keyword === 'sunshine limousine') merchant = 'SUNSHINE LIMOUSINE';
-                        break;
-                    }
-                }
-                if (merchant) break;
-            }
-
-            // Extract amount and currency
-            let amount = null, currency = null;
-            const amountRegex = /(?:total|amount|balance|sum|twd|usd|nt\$)?\s*([$€£¥NT\$TWDUSD])\s*(\d{1,3}(?:,\d{3})*(?:\.\d+)?)/i;
-            let amounts = [];
-            for (let line of lines) {
-                const match = line.match(amountRegex);
-                if (match) {
-                    const num = parseFloat(match[2].replace(/[^0-9.]/g, ''));
-                    let curr = match[1] ? match[1].toUpperCase() : 'TWD'; // Default to TWD if ambiguous
-                    if (curr === '$') curr = 'TWD'; // Assume TWD for '$' in this context
-                    if (curr === 'NT$') curr = 'TWD';
-                    amounts.push({ amount: num, currency: curr });
-                }
-            }
-            if (amounts.length > 0) {
-                const maxAmount = amounts.reduce((max, curr) => max.amount > curr.amount ? max : curr, amounts[0]);
-                amount = maxAmount.amount;
-                currency = maxAmount.currency;
-            }
-
-            return { date: receiptDate, merchant, amount, currency };
-        }
-
-        // Parse date with multiple formats
-        function parseDate(dateStr) {
-            dateStr = dateStr.replace(/\s+/g, ' ').trim();
-            if (dateStr.match(/\d{2}-\d{2}-\d{2}/)) {
-                return new Date(`20${dateStr}`); // Assuming 20XX for MM-DD-YY
-            }
-            if (dateStr.match(/\d{1,2}\/\d{1,2}\/\d{2}/)) {
-                const parts = dateStr.split('/');
-                return new Date(`20${parts[2]}-${parts[0]}-${parts[1]}`); // MM/DD/YY
-            }
-            if (dateStr.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i)) {
-                return new Date(dateStr);
-            }
-            return new Date(dateStr.replace(/\//g, '-'));
-        }
-
-        // Step 2: Parse CSV file
-        function parseCSV(file) {
-            return new Promise((resolve, reject) => {
-                if (!file) {
-                    log('<span class="error">No CSV file uploaded.</span>');
-                    resolve();
-                    return;
-                }
-                Papa.parse(file, {
-                    header: true,
-                    complete: (result) => {
-                        transactions = result.data;
-                        if (transactions.length === 0) {
-                            log('<span class="error">No data found in CSV file.</span>');
-                        } else {
-                            log(`Parsed ${transactions.length} transactions from CSV.`);
-                        }
-                        resolve();
-                    },
-                    error: (error) => {
-                        log(`<span class="error">Error parsing CSV: ${error.message}</span>`);
-                        resolve();
-                    }
-                });
-            });
-        }
-
-        // Step 3: Process files and match receipts with transactions
-        async function processFiles() {
-            const receiptFiles = document.getElementById('receiptInput').files;
-            const csvFile = document.getElementById('csvInput').files[0];
-
-            log('Starting file processing...');
-            await processReceipts(receiptFiles);
-            const reader = new FileReader();
-            reader.onload = async () => {
-                await parseCSV(reader.result);
-                if (receipts.length > 0 && transactions.length > 0) {
-                    matchReceiptsWithTransactions();
-                    displayReport();
-                    log('Processing completed. Check the report below.');
+                if (data.responses && data.responses[0].fullTextAnnotation) {
+                    const extractedText = data.responses[0].fullTextAnnotation.text;
+                    displayResult(extractedText);
                 } else {
-                    log('<span class="error">Insufficient data to proceed. Please upload both receipts and a valid CSV file.</span>');
+                    alert('No text detected in the image.');
                 }
-            };
-            reader.onerror = () => {
-                log('<span class="error">Error reading CSV file.</span>');
-            };
-            reader.readAsText(csvFile);
-        }
-
-        // Modified matching logic to prioritize exact amount match
-        function matchReceiptsWithTransactions() {
-            reportData = [];
-            for (let transaction of transactions) {
-                const purchaseDate = parseDate(transaction['Purchase Date']);
-                const vendorName = transaction['Vendor Name'].toLowerCase().trim();
-                const sourceAmount = parseFloat(transaction['Source Amount']);
-                const sourceCurrency = transaction['Original Currency'].toUpperCase();
-                const itemTotal = parseFloat(transaction['Item Total'] || sourceAmount);
-
-                let matches = [{ score: 0, receipt: null }, { score: 0, receipt: null }, { score: 0, receipt: null }];
-
-                for (let receipt of receipts) {
-                    // Step 1: Exact amount match
-                    const receiptAmount = receipt.amount || 0;
-                    const receiptCurrency = (receipt.currency || 'TWD').toUpperCase();
-                    const isAmountMatch = receiptAmount === sourceAmount && 
-                                         (receiptCurrency === sourceCurrency || 
-                                          (sourceCurrency === 'USD' && receiptCurrency.match(/\$/)) || 
-                                          (sourceCurrency === 'TWD' && receiptCurrency.match(/TWD/)));
-
-                    if (!isAmountMatch) continue;
-
-                    let score = 0;
-
-                    // Step 2: Vendor match (30 points for exact match, scaled down for partial)
-                    const vendorSimilarity = advancedFuzzyMatch(vendorName, receipt.merchant || '');
-                    score += vendorSimilarity * 30;
-
-                    // Step 3: Date match (20 points if within 5 days, scaled down)
-                    const dateDiff = receipt.date && purchaseDate ? 
-                        Math.abs((receipt.date - purchaseDate) / (1000 * 60 * 60 * 24)) : Infinity;
-                    if (dateDiff <= 5) score += 20 - (dateDiff * 4);
-
-                    log(`Transaction: ${vendorName}, Receipt Merchant: ${receipt.merchant}, Amount Match: ${isAmountMatch}, Score: ${score}, Date Diff: ${dateDiff}, Vendor Similarity: ${vendorSimilarity}`);
-
-                    // Update top 3 matches
-                    if (score > matches[2].score) {
-                        if (score > matches[1].score) {
-                            if (score > matches[0].score) {
-                                matches[2] = matches[1];
-                                matches[1] = matches[0];
-                                matches[0] = { score, receipt };
-                            } else {
-                                matches[2] = matches[1];
-                                matches[1] = { score, receipt };
-                            }
-                        } else {
-                            matches[2] = { score, receipt };
-                        }
-                    }
-                }
-
-                // Determine match status for each option
-                const matchStatuses = matches.map(match => ({
-                    status: match.score >= 20 ? 'Matched' : 'Not Matched',
-                    receipt: match.receipt,
-                    score: match.score
-                }));
-
-                // Calculate conversion rate
-                const conversionRate = sourceCurrency === 'USD' ? 1 : (itemTotal / sourceAmount) || 0;
-
-                reportData.push({
-                    date: transaction['Purchase Date'],
-                    merchant: transaction['Vendor Name'],
-                    originalAmount: sourceAmount,
-                    originalCurrency: sourceCurrency,
-                    conversionRate: conversionRate.toFixed(4),
-                    primaryMatch: matchStatuses[0],
-                    secondaryMatch: matchStatuses[1],
-                    tertiaryMatch: matchStatuses[2]
-                });
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Error processing the receipt. Check the console for details.');
             }
         }
 
-        // Advanced fuzzy match for vendor names using Jaro-Winkler similarity
-        function advancedFuzzyMatch(target, receiptMerchant) {
-            if (!target || !receiptMerchant) return 0;
+        function displayResult(text) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<h2>Extracted Text:</h2><pre>' + text + '</pre>';
 
-            target = target.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-            receiptMerchant = receiptMerchant.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+            // Parse key information (customize based on receipt format)
+            const lines = text.split('\n').map(line => line.trim()).filter(line => line);
+            let date, merchant, amount, currency;
 
-            // Split into words and check for significant overlap
-            const targetWords = target.split(/\s+/).filter(word => word.length > 3);
-            const receiptWords = receiptMerchant.split(/\s+/).filter(word => word.length > 3);
-
-            let maxSimilarity = 0;
-            for (let tWord of targetWords) {
-                for (let rWord of receiptWords) {
-                    const similarity = jaroWinklerSimilarity(tWord, rWord);
-                    if (similarity > maxSimilarity) maxSimilarity = similarity;
+            lines.forEach(line => {
+                if (line.includes('Date') || line.includes('2025')) date = line;
+                if (line.includes('MARRIOTT') || line.includes('KAOHSIUNG')) merchant = line;
+                if (line.includes('NT$') || line.includes('$')) {
+                    const match = line.match(/[\d,.]+/);
+                    if (match) amount = match[0];
+                    currency = line.includes('NT$') ? 'NTD' : 'USD';
                 }
-            }
-
-            return maxSimilarity > 0.7 ? maxSimilarity : 0; // Threshold of 70% similarity
-        }
-
-        // Jaro-Winkler similarity implementation
-        function jaroWinklerSimilarity(s1, s2) {
-            let m = 0;
-            const l1 = s1.length, l2 = s2.length;
-            if (l1 === 0 || l2 === 0) return 0;
-
-            const matchDistance = Math.floor(Math.max(l1, l2) / 2) - 1;
-            const s1Matches = new Array(l1).fill(false);
-            const s2Matches = new Array(l2).fill(false);
-
-            // Find matching characters
-            for (let i = 0; i < l1; i++) {
-                const start = Math.max(0, i - matchDistance);
-                const end = Math.min(i + matchDistance + 1, l2);
-                for (let j = start; j < end; j++) {
-                    if (!s2Matches[j] && s1[i] === s2[j]) {
-                        s1Matches[i] = true;
-                        s2Matches[j] = true;
-                        m++;
-                        break;
-                    }
-                }
-            }
-
-            if (m === 0) return 0;
-
-            // Count transpositions
-            let t = 0, k = 0;
-            for (let i = 0; i < l1; i++) {
-                if (s1Matches[i]) {
-                    while (!s2Matches[k]) k++;
-                    if (s1[i] !== s2[k]) t++;
-                    k++;
-                }
-            }
-            t = t / 2;
-
-            // Jaro similarity
-            const jaro = (m / l1 + m / l2 + (m - t) / m) / 3;
-
-            // Winkler adjustment
-            let p = 0, l = 0;
-            const maxPrefix = 4;
-            for (let i = 0; i < Math.min(maxPrefix, l1, l2); i++) {
-                if (s1[i] === s2[i]) l++;
-                else break;
-            }
-            return jaro + l * 0.1 * (1 - jaro);
-        }
-
-        // Display the report in HTML
-        function displayReport() {
-            const reportBody = document.getElementById('reportBody');
-            reportBody.innerHTML = '';
-
-            reportData.forEach(row => {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td>${row.date}</td>
-                    <td>${row.merchant}</td>
-                    <td>${row.originalAmount}</td>
-                    <td>${row.originalCurrency}</td>
-                    <td>${row.conversionRate}</td>
-                    <td>${row.primaryMatch.status} (Score: ${row.primaryMatch.score.toFixed(2)})</td>
-                    <td>${row.primaryMatch.receipt ? `<img src="data:image/jpeg;base64,${row.primaryMatch.receipt.base64}" alt="Receipt">` : 'N/A'}</td>
-                    <td>${row.secondaryMatch.status} (Score: ${row.secondaryMatch.score.toFixed(2)})</td>
-                    <td>${row.secondaryMatch.receipt ? `<img src="data:image/jpeg;base64,${row.primaryMatch.receipt.base64}" alt="Receipt">` : 'N/A'}</td>
-                    <td>${row.tertiaryMatch.status} (Score: ${row.tertiaryMatch.score.toFixed(2)})</td>
-                    <td>${row.tertiaryMatch.receipt ? `<img src="data:image/jpeg;base64,${row.primaryMatch.receipt.base64}" alt="Receipt">` : 'N/A'}</td>
-                `;
-                reportBody.appendChild(tr);
             });
-        }
 
-        // Export both Excel and HTML files as a ZIP
-        function exportReports() {
-            const zip = new JSZip();
+            // Create table
+            const table = `
+                <table>
+                    <tr><th>Field</th><th>Value</th></tr>
+                    <tr><td>Date</td><td>${date || 'Not found'}</td></tr>
+                    <tr><td>Merchant</td><td>${merchant || 'Not found'}</td></tr>
+                    <tr><td>Original Amount</td><td>${amount || 'Not found'}</td></tr>
+                    <tr><td>Original Currency</td><td>${currency || 'Not found'}</td></tr>
+                    <tr><td>Converting Rate</td><td>N/A (CSV required)</td></tr>
+                    <tr><td>Match Status</td><td>N/A (CSV required)</td></tr>
+                    <tr><td>Receipt</td><td><a href="${URL.createObjectURL(document.getElementById('receiptInput').files[0])}" download>View Receipt</a></td></tr>
+                </table>
+            `;
+            resultDiv.innerHTML += table;
 
-            // Generate Excel file
+            // Prepare data for Excel
             const wsData = [
-                ['Date', 'Merchant', 'Original Amount', 'Original Currency', 'Conversion Rate', 'Primary Match Status', 'Primary Match Score', 'Primary Receipt', 'Secondary Match Status', 'Secondary Match Score', 'Secondary Receipt', 'Tertiary Match Status', 'Tertiary Match Score', 'Tertiary Receipt'],
-                ...reportData.map(row => [
-                    row.date,
-                    row.merchant,
-                    row.originalAmount,
-                    row.originalCurrency,
-                    row.conversionRate,
-                    row.primaryMatch.status,
-                    row.primaryMatch.score.toFixed(2),
-                    row.primaryMatch.receipt ? 'Receipt Attached' : 'N/A',
-                    row.secondaryMatch.status,
-                    row.secondaryMatch.score.toFixed(2),
-                    row.secondaryMatch.receipt ? 'Receipt Attached' : 'N/A',
-                    row.tertiaryMatch.status,
-                    row.tertiaryMatch.score.toFixed(2),
-                    row.tertiaryMatch.receipt ? 'Receipt Attached' : 'N/A'
-                ])
+                ['Date', 'Merchant', 'Original Amount', 'Original Currency', 'Converting Rate', 'Match Status', 'Receipt'],
+                [date || '', merchant || '', amount || '', currency || '', '', '', '']
             ];
             const ws = XLSX.utils.aoa_to_sheet(wsData);
             const wb = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wb, ws, 'Report');
+            XLSX.utils.book_append_sheet(wb, ws, 'Receipts');
             const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-            zip.file('Consolidated_Report.xlsx', excelBuffer);
+            saveExcel(excelBuffer);
 
-            // Generate HTML file
-            const htmlContent = `
-                <!DOCTYPE html>
-                <html>
-                <head><title>Consolidated Report</title></head>
-                <body>
-                    <h1>Consolidated Report</h1>
-                    <table border="1">
-                        <thead>
-                            <tr>
-                                <th>Date</th>
-                                <th>Merchant</th>
-                                <th>Original Amount</th>
-                                <th>Original Currency</th>
-                                <th>Conversion Rate</th>
-                                <th>Primary Match Status</th>
-                                <th>Primary Match Score</th>
-                                <th>Primary Receipt</th>
-                                <th>Secondary Match Status</th>
-                                <th>Secondary Match Score</th>
-                                <th>Secondary Receipt</th>
-                                <th>Tertiary Match Status</th>
-                                <th>Tertiary Match Score</th>
-                                <th>Tertiary Receipt</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${reportData.map(row => `
-                                <tr>
-                                    <td>${row.date}</td>
-                                    <td>${row.merchant}</td>
-                                    <td>${row.originalAmount}</td>
-                                    <td>${row.originalCurrency}</td>
-                                    <td>${row.conversionRate}</td>
-                                    <td>${row.primaryMatch.status}</td>
-                                    <td>${row.primaryMatch.score.toFixed(2)}</td>
-                                    <td>${row.primaryMatch.receipt ? 'Receipt Attached' : 'N/A'}</td>
-                                    <td>${row.secondaryMatch.status}</td>
-                                    <td>${row.secondaryMatch.score.toFixed(2)}</td>
-                                    <td>${row.secondaryMatch.receipt ? 'Receipt Attached' : 'N/A'}</td>
-                                    <td>${row.tertiaryMatch.status}</td>
-                                    <td>${row.tertiaryMatch.score.toFixed(2)}</td>
-                                    <td>${row.tertiaryMatch.receipt ? 'Receipt Attached' : 'N/A'}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                </body>
-                </html>
-            `;
-            zip.file('Consolidated_Report.html', htmlContent);
-
-            // Generate and download the ZIP file
-            zip.generateAsync({ type: 'blob' }).then(function(content) {
-                saveAs(content, 'Consolidated_Report.zip');
-            });
+            document.getElementById('downloadBtn').classList.remove('hidden');
         }
 
-        // Logging function
-        function log(message) {
-            const logDiv = document.getElementById('log');
-            logDiv.innerHTML += `<p>${new Date().toLocaleTimeString()} - ${message}</p>`;
+        function saveExcel(buffer) {
+            const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'receipt_data.xlsx';
+            link.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function downloadExcel() {
+            // This will trigger the download again if needed
+            alert('Excel file has been generated. Check your downloads folder.');
         }
     </script>
 </body>
