@@ -153,8 +153,8 @@
         // Extract text using Google Vision API with error handling
         async function extractTextFromImage(base64) {
             const apiKey = 'AIzaSyDID5ib0eHNVrBYG0e5vfWQ9RkVinX4hNg'; // Replace with your Google Vision API key
-            if (!apiKey) {
-                throw new Error('Google Vision API key is missing. Please replace YOUR_GOOGLE_API_KEY.');
+            if (!apiKey || apiKey === 'YOUR_GOOGLE_API_KEY') {
+                throw new Error('Google Vision API key is missing or invalid. Please replace YOUR_GOOGLE_API_KEY with a valid key.');
             }
             const url = `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`;
             const requestBody = {
@@ -177,11 +177,11 @@
                 return data.responses[0]?.textAnnotations[0]?.description || 'No text detected';
             } catch (error) {
                 log(`<span class="error">Vision API error: ${error.message}</span>`);
-                return 'Error extracting text';
+                throw error;
             }
         }
 
-        // Improved extraction of receipt data
+        // Improved extraction of receipt data with currency
         function extractReceiptData(text) {
             const lines = text.split('\n').map(line => line.trim());
             
@@ -302,18 +302,24 @@
 
             log('Starting file processing...');
             await processReceipts(receiptFiles);
-            await parseCSV(csvFile);
-
-            if (receipts.length > 0 && transactions.length > 0) {
-                matchReceiptsWithTransactions();
-                displayReport();
-                log('Processing completed. Check the report below.');
-            } else {
-                log('<span class="error">Insufficient data to proceed. Please upload both receipts and a valid CSV file.</span>');
-            }
+            const reader = new FileReader();
+            reader.onload = async () => {
+                await parseCSV(reader.result);
+                if (receipts.length > 0 && transactions.length > 0) {
+                    matchReceiptsWithTransactions();
+                    displayReport();
+                    log('Processing completed. Check the report below.');
+                } else {
+                    log('<span class="error">Insufficient data to proceed. Please upload both receipts and a valid CSV file.</span>');
+                }
+            };
+            reader.onerror = () => {
+                log('<span class="error">Error reading CSV file.</span>');
+            };
+            reader.readAsText(csvFile);
         }
 
-        // Match receipts with transactions based on exact amount match
+        // Modified matching logic to prioritize exact amount match
         function matchReceiptsWithTransactions() {
             reportData = [];
             for (let transaction of transactions) {
@@ -326,11 +332,9 @@
                 let matches = [{ score: 0, receipt: null }, { score: 0, receipt: null }, { score: 0, receipt: null }];
 
                 for (let receipt of receipts) {
-                    // Normalize amounts for comparison
+                    // Step 1: Exact amount match
                     const receiptAmount = receipt.amount || 0;
                     const receiptCurrency = (receipt.currency || 'TWD').toUpperCase();
-
-                    // Exact amount match is the primary criterion
                     const isAmountMatch = receiptAmount === sourceAmount && 
                                          (receiptCurrency === sourceCurrency || 
                                           (sourceCurrency === 'USD' && receiptCurrency.match(/\$/)) || 
@@ -340,11 +344,11 @@
 
                     let score = 0;
 
-                    // Vendor match (30 points for exact match, scaled down with Jaro-Winkler)
+                    // Step 2: Vendor match (30 points for exact match, scaled down for partial)
                     const vendorSimilarity = advancedFuzzyMatch(vendorName, receipt.merchant || '');
                     score += vendorSimilarity * 30;
 
-                    // Date match (20 points if within 5 days, scaled down)
+                    // Step 3: Date match (20 points if within 5 days, scaled down)
                     const dateDiff = receipt.date && purchaseDate ? 
                         Math.abs((receipt.date - purchaseDate) / (1000 * 60 * 60 * 24)) : Infinity;
                     if (dateDiff <= 5) score += 20 - (dateDiff * 4);
@@ -479,9 +483,9 @@
                     <td>${row.primaryMatch.status} (Score: ${row.primaryMatch.score.toFixed(2)})</td>
                     <td>${row.primaryMatch.receipt ? `<img src="data:image/jpeg;base64,${row.primaryMatch.receipt.base64}" alt="Receipt">` : 'N/A'}</td>
                     <td>${row.secondaryMatch.status} (Score: ${row.secondaryMatch.score.toFixed(2)})</td>
-                    <td>${row.secondaryMatch.receipt ? `<img src="data:image/jpeg;base64,${row.secondaryMatch.receipt.base64}" alt="Receipt">` : 'N/A'}</td>
+                    <td>${row.secondaryMatch.receipt ? `<img src="data:image/jpeg;base64,${row.primaryMatch.receipt.base64}" alt="Receipt">` : 'N/A'}</td>
                     <td>${row.tertiaryMatch.status} (Score: ${row.tertiaryMatch.score.toFixed(2)})</td>
-                    <td>${row.tertiaryMatch.receipt ? `<img src="data:image/jpeg;base64,${row.tertiaryMatch.receipt.base64}" alt="Receipt">` : 'N/A'}</td>
+                    <td>${row.tertiaryMatch.receipt ? `<img src="data:image/jpeg;base64,${row.primaryMatch.receipt.base64}" alt="Receipt">` : 'N/A'}</td>
                 `;
                 reportBody.appendChild(tr);
             });
