@@ -9,10 +9,11 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; }
-        #dropZone { border: 2px dashed #ccc; padding: 20px; text-align: center; margin-bottom: 20px; }
-        #dropZone.dragover { background-color: #e1e1e1; }
+        .dropZone { border: 2px dashed #ccc; padding: 20px; text-align: center; margin-bottom: 20px; }
+        .dropZone.dragover { background-color: #e1e1e1; }
         #result { margin-top: 20px; }
         select { margin-bottom: 10px; padding: 5px; }
+        #csvDropZone, #receiptDropZone { width: 100%; }
     </style>
 </head>
 <body>
@@ -22,58 +23,157 @@
         <option value="google">Google Vision API</option>
         <option value="tesseract">Tesseract.js</option>
     </select>
-    <div id="dropZone">Drop your receipt images or PDFs here, or click to select files.</div>
-    <button onclick="processReceipts()">Process Receipts</button>
+
+    <h3>Upload CSV File</h3>
+    <div id="csvDropZone" class="dropZone">Drop your CSV file here, or click to select.</div>
+
+    <h3>Upload Receipt Files</h3>
+    <div id="receiptDropZone" class="dropZone">Drop your receipt images or PDFs here, or click to select.</div>
+
+    <button onclick="processReceipts()" disabled id="processButton">Process Receipts</button>
     <div id="result"></div>
 
     <script>
-        const dropZone = document.getElementById('dropZone');
+        const csvDropZone = document.getElementById('csvDropZone');
+        const receiptDropZone = document.getElementById('receiptDropZone');
         const resultDiv = document.getElementById('result');
         const ocrMethodSelect = document.getElementById('ocrMethod');
-        let files = [];
+        const processButton = document.getElementById('processButton');
+        let csvFile = null;
+        let receiptFiles = [];
+        let csvData = [];
         let ocrMethod = 'google';
 
         function updateOcrMethod() {
             ocrMethod = ocrMethodSelect.value;
         }
 
-        dropZone.addEventListener('dragover', (e) => {
+        // CSV Drop Zone Handlers
+        csvDropZone.addEventListener('dragover', (e) => {
             e.preventDefault();
-            dropZone.classList.add('dragover');
+            csvDropZone.classList.add('dragover');
         });
 
-        dropZone.addEventListener('dragleave', () => {
-            dropZone.classList.remove('dragover');
+        csvDropZone.addEventListener('dragleave', () => {
+            csvDropZone.classList.remove('dragover');
         });
 
-        dropZone.addEventListener('drop', (e) => {
+        csvDropZone.addEventListener('drop', (e) => {
             e.preventDefault();
-            dropZone.classList.remove('dragover');
-            files = Array.from(e.dataTransfer.files);
+            csvDropZone.classList.remove('dragover');
+            const files = Array.from(e.dataTransfer.files);
+            const csv = files.find(file => file.name.endsWith('.csv'));
+            if (csv) {
+                csvFile = csv;
+                processCSV();
+                displayFiles();
+            } else {
+                alert('Please drop a valid CSV file.');
+            }
+        });
+
+        csvDropZone.addEventListener('click', () => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'text/csv,application/vnd.ms-excel';
+            input.onchange = (e) => {
+                const file = e.target.files[0];
+                if (file && file.name.endsWith('.csv')) {
+                    csvFile = file;
+                    processCSV();
+                    displayFiles();
+                } else {
+                    alert('Please select a valid CSV file.');
+                }
+            };
+            input.click();
+        });
+
+        // Receipt Drop Zone Handlers
+        receiptDropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            receiptDropZone.classList.add('dragover');
+        });
+
+        receiptDropZone.addEventListener('dragleave', () => {
+            receiptDropZone.classList.remove('dragover');
+        });
+
+        receiptDropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            receiptDropZone.classList.remove('dragover');
+            receiptFiles = Array.from(e.dataTransfer.files).filter(file => file.type.startsWith('image/') || file.type === 'application/pdf');
             displayFiles();
+            checkProcessButton();
         });
 
-        dropZone.addEventListener('click', () => {
+        receiptDropZone.addEventListener('click', () => {
             const input = document.createElement('input');
             input.type = 'file';
             input.multiple = true;
             input.accept = 'image/*,application/pdf';
             input.onchange = (e) => {
-                files = Array.from(e.target.files);
+                receiptFiles = Array.from(e.target.files).filter(file => file.type.startsWith('image/') || file.type === 'application/pdf');
                 displayFiles();
+                checkProcessButton();
             };
             input.click();
         });
 
         function displayFiles() {
-            resultDiv.innerHTML = `<h3>Selected Files:</h3><ul>${files.map(file => `<li>${file.name}</li>`).join('')}</ul>`;
+            resultDiv.innerHTML = `<h3>Uploaded Files:</h3>`;
+            if (csvFile) {
+                resultDiv.innerHTML += `<p>CSV File: ${csvFile.name}</p>`;
+            } else {
+                resultDiv.innerHTML += `<p>No CSV file uploaded.</p>`;
+            }
+            if (receiptFiles.length > 0) {
+                resultDiv.innerHTML += `<p>Receipt Files: <ul>${receiptFiles.map(file => `<li>${file.name}</li>`).join('')}</ul></p>`;
+            } else {
+                resultDiv.innerHTML += `<p>No receipt files uploaded.</p>`;
+            }
+        }
+
+        function processCSV() {
+            csvData = [];
+            if (csvFile) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const text = e.target.result;
+                    const rows = text.split('\n').filter(row => row.trim());
+                    const headers = rows[0].split(',').map(header => header.trim());
+                    csvData = rows.slice(1).map(row => {
+                        const values = row.split(',').map(value => value.trim());
+                        return headers.reduce((obj, header, index) => {
+                            obj[header] = values[index] || '';
+                            return obj;
+                        }, {});
+                    });
+                    // Standardize CSV Purchase Date to YYYY-MM-DD
+                    csvData.forEach(entry => {
+                        if (entry['Purchase Date']) {
+                            entry['Purchase Date'] = standardizeCsvDate(entry['Purchase Date']);
+                        }
+                    });
+                };
+                reader.readAsText(csvFile);
+            }
+        }
+
+        function checkProcessButton() {
+            processButton.disabled = !csvFile || receiptFiles.length === 0;
         }
 
         async function processReceipts() {
+            if (!csvFile || receiptFiles.length === 0) {
+                alert('Please upload both a CSV file and receipt files before processing.');
+                return;
+            }
+
             resultDiv.innerHTML = '<h3>Processing...</h3>';
             const results = [];
 
-            for (const file of files) {
+            for (const file of receiptFiles) {
                 let base64 = await convertFileToBase64(file);
                 let text = '';
 
@@ -127,11 +227,10 @@
 
             // Prepare data for a single Excel file with new columns
             const wb = XLSX.utils.book_new();
-            const wsData = [['Filename', 'Field', 'Value', 'Purchase Date', 'Amount']];
+            const wsData = [['Filename', 'Field', 'Value', 'Purchase Date', 'CSV Source Amount', 'Source Currency', 'Match Status']];
             results.forEach(result => {
                 const { filename, extractedData } = result;
                 let purchaseDate = '';
-                let amount = '';
 
                 extractedData.forEach(({ field, value }) => {
                     // Check both field and value for dates
@@ -142,15 +241,14 @@
                             purchaseDate = standardizeDate(value) || purchaseDate;
                         }
                     }
-                    // Check both field and value for amounts (any number)
-                    if (!amount) {
-                        if (isNumericValue(field)) {
-                            amount = extractAmount(field) || amount;
-                        } else if (isNumericValue(value)) {
-                            amount = extractAmount(value) || amount;
-                        }
-                    }
-                    wsData.push([filename, field, value, purchaseDate, amount]);
+
+                    // Match with CSV data using Source Amount as primary key
+                    const csvMatch = findCsvMatch(purchaseDate, field, value);
+                    const csvSourceAmount = csvMatch ? parseFloat(csvMatch['Source Amount'] || '0').toFixed(2) : '';
+                    const sourceCurrency = csvMatch ? csvMatch['Source Currency'] || '' : '';
+                    const matchStatus = csvMatch ? 'Matched' : 'No Match';
+
+                    wsData.push([filename, field, value, purchaseDate || '', csvSourceAmount, sourceCurrency, matchStatus]);
                 });
             });
 
@@ -186,8 +284,8 @@
                 /\d{2}-\d{2}-\d{2}/,   // e.g., 01-20-25
                 /\w{3} \w{3} \d{2} \d{4}/, // e.g., Sun Jan 19 2025
                 /\w{3} \w{3} \d{4}/,   // e.g., Mon Jan 20 2025
-                /\w{3} \d{2}/,         // e.g., Jan 20
                 /\w{3} \d{2} \d/,      // e.g., Jan 20 5
+                /\w{3} \d{2}/,         // e.g., Jan 20
             ];
             return datePatterns.some(pattern => pattern.test(value));
         }
@@ -197,6 +295,7 @@
                 Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06',
                 Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12'
             };
+            const currentYear = '2025'; // Assuming current year based on context
 
             // Try parsing directly with Date
             const date = new Date(value);
@@ -211,11 +310,10 @@
             const matchShort = value.match(/(\d{2})-(\d{2})-(\d{2})/); // e.g., 01-20-25
             if (matchShort) return `20${matchShort[3]}-${matchShort[1]}-${matchShort[2]}`;
 
-            const matchDay = value.match(/(\w{3}) \w{3} \d{2} \d{4}/); // e.g., Sun Jan 19 2025
+            const matchDay = value.match(/(\w{3}) (\w{3}) (\d{2}) (\d{4})/); // e.g., Sun Jan 19 2025
             if (matchDay) {
-                const fullMatch = value.match(/(\w{3}) (\w{3}) (\d{2}) (\d{4})/);
-                const month = months[fullMatch[2]];
-                return `${fullMatch[4]}-${month}-${fullMatch[3].padStart(2, '0')}`;
+                const month = months[matchDay[2]];
+                return `${matchDay[4]}-${month}-${matchDay[3].padStart(2, '0')}`;
             }
 
             const matchNoDay = value.match(/(\w{3}) (\w{3}) (\d{4})/); // e.g., Mon Jan 20 2025
@@ -224,24 +322,57 @@
                 return `${matchNoDay[3]}-${month}-01`; // Default to 1st if no day
             }
 
+            const matchMMMDDN = value.match(/(\w{3}) (\d{2}) \d/); // e.g., Jan 20 5
+            if (matchMMMDDN) {
+                const month = months[matchMMMDDN[1]];
+                return `${currentYear}-${month}-${matchMMMDDN[2].padStart(2, '0')}`;
+            }
+
             const matchMMMDD = value.match(/(\w{3}) (\d{2})/); // e.g., Jan 20
             if (matchMMMDD) {
                 const month = months[matchMMMDD[1]];
-                return `2025-${month}-${matchMMMDD[2].padStart(2, '0')}`; // Assume year 2025
+                return `${currentYear}-${month}-${matchMMMDD[2].padStart(2, '0')}`;
             }
 
             return '';
         }
 
-        function isNumericValue(value) {
-            // Match any number, with or without currency symbols, commas, or decimals
-            return /\d{1,3}(?:,\d{3})*(?:\.\d{2})?/.test(value);
+        function standardizeCsvDate(value) {
+            const match = value.match(/(\d{1,2})\/(\d{1,2})\/(\d{2})/); // e.g., 1/13/25
+            if (match) {
+                const month = match[1].padStart(2, '0');
+                const day = match[2].padStart(2, '0');
+                const year = `20${match[3]}`; // Assuming 20XX for 2-digit years
+                return `${year}-${month}-${day}`; // YYYY-MM-DD
+            }
+            return '';
         }
 
         function extractAmount(value) {
             // Extract the first number found in the string
             const match = value.match(/\d{1,3}(?:,\d{3})*(?:\.\d{2})?/);
             return match ? match[0].replace(/,/g, '') : '';
+        }
+
+        function findCsvMatch(purchaseDate, field, value) {
+            if (!purchaseDate) return null;
+
+            const ocrAmount = parseFloat(extractAmount(field) || extractAmount(value) || '0');
+            if (ocrAmount === 0) return null; // Skip if no amount is found
+
+            // Find the best match based on Source Amount as primary key, with Purchase Date as secondary
+            return csvData.find(entry => {
+                const csvPurchaseDate = entry['Purchase Date'];
+                const csvSourceAmount = parseFloat(entry['Source Amount'] || '0');
+
+                // Amount match with small tolerance
+                const amountMatch = Math.abs(csvSourceAmount - ocrAmount) < 0.01;
+
+                // Date match (optional secondary criterion)
+                const dateMatch = !csvPurchaseDate || csvPurchaseDate === purchaseDate;
+
+                return amountMatch && dateMatch;
+            });
         }
 
         function convertFileToBase64(file) {
