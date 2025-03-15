@@ -288,7 +288,7 @@
                 const formattedData = r.extractedData.map(d => `${d.field}: ${d.value}`).join('<br>');
                 return `<li>${r.filename}: <pre>${formattedData}</pre></li>`;
             }).join('') + '</ul>';
-            alert('A single Excel file has been generated with all receipt data.');
+            alert('A single Excel file has been generated with all receipt code.');
         }
 
         function parseReceiptText(text) {
